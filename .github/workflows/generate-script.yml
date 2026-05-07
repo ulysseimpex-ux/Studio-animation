@@ -110,7 +110,7 @@ jobs:
 
           async function geminiCritique(text) {
             return withRetry(async () => {
-              const model = gemini.getGenerativeModel({ model: 'gemini-1.5-flash' });
+              const model = gemini.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
               const r = await model.generateContent(text);
               return r.response.text();
             }, 'gemini');
