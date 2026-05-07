@@ -6,7 +6,7 @@ Pipeline de production d'animations narratives entièrement automatisé via GitH
 
 Chaque épisode démarre par une **issue GitHub** étiquetée `episode`. Une chaîne d'étapes s'enchaîne ensuite automatiquement :
 
-1. **Script + prompts visuels** générés par Claude (rédaction) puis critiqués par Gemini Flash, intégrés par Claude, et déclinés en prompts pour Leonardo AI / Adobe Firefly / Ideogram.
+1. **Script + prompts visuels** générés par Claude en une seule passe (rédaction, auto-critique et réécriture en interne), puis déclinés en prompts pour Leonardo AI / Adobe Firefly / Ideogram.
 2. **Images** générées hors workflow puis poussées dans `assets/images/` — déclenche le rendu Remotion (1920×1080 ou 1080×1920) avec sous-titres animés.
 3. **Voix off** générée localement par `scripts-python/kokoro-tts.py` (Kokoro TTS, hybride avec ElevenLabs au-delà de 500 mots).
 4. **Assemblage final** via FFmpeg quand `musique.mp3` arrive : voix + musique (20 % de volume) + fades + commentaire automatique sur l'issue.

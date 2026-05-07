@@ -24,7 +24,7 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: npm install @anthropic-ai/sdk@latest @google/generative-ai@latest
+        run: npm install @anthropic-ai/sdk@latest
 
       - name: Compute episode slug
         id: slug
@@ -59,7 +59,6 @@ jobs:
       - name: Generate script + prompts
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DIR: ${{ steps.slug.outputs.dir }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
         run: |
@@ -67,14 +66,12 @@ jobs:
           const fs = require('fs');
           const path = require('path');
           const Anthropic = require('@anthropic-ai/sdk');
-          const { GoogleGenerativeAI } = require('@google/generative-ai');
 
           const dir = process.env.DIR;
           const title = process.env.ISSUE_TITLE;
           const brief = fs.readFileSync(path.join(dir, 'brief.md'), 'utf-8');
 
           const anthropic = new Anthropic.default({ apiKey: process.env.ANTHROPIC_API_KEY });
-          const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
           const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
@@ -96,11 +93,11 @@ jobs:
             throw lastErr;
           }
 
-          async function claude(prompt, system) {
+          async function claude(prompt, system, maxTokens = 4096) {
             return withRetry(async () => {
               const r = await anthropic.messages.create({
                 model: 'claude-opus-4-7',
-                max_tokens: 4096,
+                max_tokens: maxTokens,
                 system,
                 messages: [{ role: 'user', content: prompt }],
               });
@@ -108,29 +105,14 @@ jobs:
             }, 'claude');
           }
 
-          async function geminiCritique(text) {
-            return withRetry(async () => {
-              const model = gemini.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
-              const r = await model.generateContent(text);
-              return r.response.text();
-            }, 'gemini');
-          }
-
           (async () => {
-            const draft = await claude(
-              `Voici le brief d'un épisode intitulé "${title}":\n\n${brief}\n\nÉcris un script narratif découpé en plans (Plan 1, Plan 2, ...). Chaque plan doit contenir un visuel court et une narration en français adaptée au public cible. Format Markdown.`,
-              "Tu es un scénariste d'animation pour studios indépendants. Tu écris des scripts narratifs concis, visuels et émotionnellement engageants."
+            const combined = await claude(
+              `Voici le brief d'un épisode intitulé "${title}":\n\n${brief}\n\nProduis directement le script FINAL en français, en suivant ce processus interne (sans le montrer dans la sortie) :\n1. Rédige un premier jet découpé en plans.\n2. Auto-critique-le sur le rythme, la clarté, le ton et les durées.\n3. Réécris-le en intégrant tes critiques.\n\nNe livre QUE le script final au format Markdown strict ci-dessous, sans préambule ni commentaire :\n\n# Script — <titre>\n\n## Plan 1 — <sous-titre> (mm:ss – mm:ss)\n**Visuel :** <description courte>\n**Narration :** « <phrase narrative> »\n\n## Plan 2 — ...\n\nContraintes : chaque plan dure 3 à 5 secondes, narration adaptée au public cible, ton cohérent avec le brief.`,
+              "Tu es scénariste d'animation senior. Tu produis un script Markdown finalisé en une seule passe : rédaction, auto-critique et réécriture sont effectuées en interne. Tu n'émets QUE le résultat final.",
+              4096
             );
 
-            const critique = await geminiCritique(
-              `Tu es directeur de création expérimenté. Critique ce script de manière constructive (rythme, clarté, ton, durées) en 5 puces:\n\n${draft}`
-            );
-
-            const finalScript = await claude(
-              `Script initial:\n\n${draft}\n\nCritiques:\n\n${critique}\n\nRéécris le script en intégrant les critiques. Conserve le format Plan 1 / Plan 2 ... avec **Visuel :** et **Narration :**. Pas de préambule, livre directement le script.`,
-              "Tu es scénariste d'animation. Tu produis un script Markdown finalisé."
-            );
-
+            const finalScript = combined.trim();
             fs.writeFileSync(path.join(dir, 'script.md'), finalScript);
 
             const prompts = await claude(
