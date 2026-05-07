@@ -1,0 +1,123 @@
+name: Assemble Video
+
+on:
+  push:
+    paths:
+      - 'episodes/**/assets/audio/musique.mp3'
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Detect changed episode
+        id: episode
+        run: |
+          set -e
+          CHANGED=$(git log -1 --name-only --pretty=format: | grep -E '^episodes/[^/]+/assets/audio/musique\.mp3$' | head -1 || true)
+          if [ -z "$CHANGED" ]; then
+            CHANGED=$(find episodes -path '*/assets/audio/musique.mp3' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)
+          fi
+          if [ -z "$CHANGED" ]; then
+            echo "No musique.mp3 found"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          DIR=$(echo "$CHANGED" | sed -E 's#(episodes/[^/]+)/.*#\1#')
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble final video
+        if: steps.episode.outputs.skip != 'true'
+        env:
+          DIR: ${{ steps.episode.outputs.dir }}
+        run: |
+          set -e
+          VIDEO="$DIR/assets/video-raw.mp4"
+          VOICE="$DIR/assets/audio/voix.mp3"
+          MUSIC="$DIR/assets/audio/musique.mp3"
+          OUT="$DIR/output/episode-final.mp4"
+
+          mkdir -p "$DIR/output"
+
+          if [ ! -f "$VIDEO" ]; then echo "Missing $VIDEO"; exit 1; fi
+          if [ ! -f "$VOICE" ]; then echo "Missing $VOICE"; exit 1; fi
+
+          DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO")
+          FADE_OUT_START=$(awk "BEGIN { printf \"%.2f\", $DURATION - 1.5 }")
+
+          ffmpeg -y \
+            -i "$VIDEO" \
+            -i "$VOICE" \
+            -i "$MUSIC" \
+            -filter_complex "\
+              [1:a]afade=t=in:st=0:d=1.0,afade=t=out:st=${FADE_OUT_START}:d=1.5[voice]; \
+              [2:a]volume=0.20,afade=t=in:st=0:d=1.0,afade=t=out:st=${FADE_OUT_START}:d=1.5[music]; \
+              [voice][music]amix=inputs=2:duration=first:dropout_transition=0[aout]" \
+            -map 0:v -map "[aout]" \
+            -c:v copy -c:a aac -b:a 192k -shortest \
+            "$OUT"
+
+      - name: Find originating issue number
+        if: steps.episode.outputs.skip != 'true'
+        id: issue
+        env:
+          DIR: ${{ steps.episode.outputs.dir }}
+        run: |
+          NUM=$(echo "$DIR" | sed -E 's#episodes/ep0*([0-9]+)-.*#\1#')
+          echo "number=$NUM" >> "$GITHUB_OUTPUT"
+
+      - name: Commit final video
+        if: steps.episode.outputs.skip != 'true'
+        env:
+          DIR: ${{ steps.episode.outputs.dir }}
+        run: |
+          git config user.name "studio-animation-bot"
+          git config user.email "bot@studio-animation.local"
+          git add "$DIR/output/episode-final.mp4"
+          git commit -m "feat: assemble final video for $DIR" || echo "Nothing to commit"
+          git push
+
+      - name: Comment on originating issue
+        if: steps.episode.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          DIR: ${{ steps.episode.outputs.dir }}
+        with:
+          script: |
+            const num = parseInt(process.env.ISSUE_NUMBER, 10);
+            if (!num) return;
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: num,
+                body: `✅ Épisode prêt — \`${process.env.DIR}/output/episode-final.mp4\``,
+              });
+            } catch (e) {
+              console.log('Could not comment on issue:', e.message);
+            }
+
+      - name: Trigger gallery deployment
+        if: steps.episode.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy-gallery.yml',
+              ref: context.ref.replace('refs/heads/', ''),
+            });

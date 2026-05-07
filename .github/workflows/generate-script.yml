@@ -1,0 +1,147 @@
+name: Generate Script
+
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  generate:
+    if: contains(github.event.issue.labels.*.name, 'episode')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install @anthropic-ai/sdk@latest @google/generative-ai@latest
+
+      - name: Compute episode slug
+        id: slug
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          SLUG=$(echo "$ISSUE_TITLE" \
+            | iconv -f utf-8 -t ascii//TRANSLIT \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' \
+            | cut -c1-50)
+          PADDED=$(printf "ep%03d" "$ISSUE_NUMBER")
+          DIR="episodes/${PADDED}-${SLUG}"
+          mkdir -p "$DIR/assets/images" "$DIR/assets/audio" "$DIR/output"
+          touch "$DIR/assets/images/.gitkeep" "$DIR/assets/audio/.gitkeep" "$DIR/output/.gitkeep"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "padded=$PADDED" >> "$GITHUB_OUTPUT"
+
+      - name: Write brief from issue body
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          DIR: ${{ steps.slug.outputs.dir }}
+        run: |
+          {
+            echo "# Brief Episode : $ISSUE_TITLE"
+            echo
+            echo "$ISSUE_BODY"
+          } > "$DIR/brief.md"
+
+      - name: Generate script + prompts
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DIR: ${{ steps.slug.outputs.dir }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          node <<'EOF'
+          const fs = require('fs');
+          const path = require('path');
+          const Anthropic = require('@anthropic-ai/sdk');
+          const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+          const dir = process.env.DIR;
+          const title = process.env.ISSUE_TITLE;
+          const brief = fs.readFileSync(path.join(dir, 'brief.md'), 'utf-8');
+
+          const anthropic = new Anthropic.default({ apiKey: process.env.ANTHROPIC_API_KEY });
+          const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+          async function claude(prompt, system) {
+            const r = await anthropic.messages.create({
+              model: 'claude-opus-4-7',
+              max_tokens: 4096,
+              system,
+              messages: [{ role: 'user', content: prompt }],
+            });
+            return r.content[0].text;
+          }
+
+          async function geminiCritique(text) {
+            const model = gemini.getGenerativeModel({ model: 'gemini-2.0-flash' });
+            const r = await model.generateContent(text);
+            return r.response.text();
+          }
+
+          (async () => {
+            const draft = await claude(
+              `Voici le brief d'un épisode intitulé "${title}":\n\n${brief}\n\nÉcris un script narratif découpé en plans (Plan 1, Plan 2, ...). Chaque plan doit contenir un visuel court et une narration en français adaptée au public cible. Format Markdown.`,
+              "Tu es un scénariste d'animation pour studios indépendants. Tu écris des scripts narratifs concis, visuels et émotionnellement engageants."
+            );
+
+            const critique = await geminiCritique(
+              `Tu es directeur de création expérimenté. Critique ce script de manière constructive (rythme, clarté, ton, durées) en 5 puces:\n\n${draft}`
+            );
+
+            const finalScript = await claude(
+              `Script initial:\n\n${draft}\n\nCritiques:\n\n${critique}\n\nRéécris le script en intégrant les critiques. Conserve le format Plan 1 / Plan 2 ... avec **Visuel :** et **Narration :**. Pas de préambule, livre directement le script.`,
+              "Tu es scénariste d'animation. Tu produis un script Markdown finalisé."
+            );
+
+            fs.writeFileSync(path.join(dir, 'script.md'), finalScript);
+
+            const prompts = await claude(
+              `Voici le script final:\n\n${finalScript}\n\nPour chaque plan, génère 3 prompts visuels optimisés respectivement pour Leonardo AI, Adobe Firefly, et Ideogram. Format Markdown:\n\n## Plan N — Titre\n\n**Leonardo AI :**\n> ...\n\n**Adobe Firefly :**\n> ...\n\n**Ideogram :**\n> ...\n\nLes prompts doivent être en anglais, descriptifs, mentionner le style visuel, l'ambiance et le ratio.`,
+              "Tu es prompt engineer spécialisé en image IA. Tu produis des prompts précis et exploitables."
+            );
+
+            fs.writeFileSync(path.join(dir, 'prompts.md'), prompts);
+
+            const summary = finalScript.split('\n').slice(0, 30).join('\n');
+            fs.writeFileSync('comment.md', `## 🎬 Script généré\n\n${summary}\n\n---\n\n## 🎨 Prompts visuels (extrait)\n\n${prompts.slice(0, 1500)}\n\n---\n\nFichiers créés dans \`${dir}\`. Ajoute tes images dans \`${dir}/assets/images/\` pour lancer le rendu.`);
+          })();
+          EOF
+
+      - name: Commit episode files
+        env:
+          DIR: ${{ steps.slug.outputs.dir }}
+        run: |
+          git config user.name "studio-animation-bot"
+          git config user.email "bot@studio-animation.local"
+          git add "$DIR" comment.md || true
+          git rm --cached comment.md || true
+          git add "$DIR"
+          git commit -m "feat: generate script and prompts for ${{ steps.slug.outputs.padded }}" || echo "Nothing to commit"
+          git push
+
+      - name: Comment on issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('comment.md', 'utf-8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });

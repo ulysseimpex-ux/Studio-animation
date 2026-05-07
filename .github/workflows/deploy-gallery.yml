@@ -1,0 +1,104 @@
+name: Deploy Gallery
+
+on:
+  push:
+    paths:
+      - 'episodes/**/output/episode-final.mp4'
+      - 'web/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Build gallery
+        run: |
+          set -e
+          mkdir -p _site/episodes
+          node <<'EOF'
+          const fs = require('fs');
+          const path = require('path');
+
+          const root = path.resolve('episodes');
+          const out = path.resolve('_site');
+          const epOut = path.join(out, 'episodes');
+
+          if (!fs.existsSync(root)) {
+            fs.mkdirSync(epOut, { recursive: true });
+            fs.writeFileSync(path.join(out, 'episodes.json'), '[]');
+            console.log('No episodes/ directory.');
+            return;
+          }
+
+          const dirs = fs.readdirSync(root, { withFileTypes: true })
+            .filter(d => d.isDirectory())
+            .map(d => d.name)
+            .sort();
+
+          const items = [];
+          for (const d of dirs) {
+            const final = path.join(root, d, 'output', 'episode-final.mp4');
+            if (!fs.existsSync(final)) continue;
+
+            const stat = fs.statSync(final);
+            const date = stat.mtime.toISOString().slice(0, 10);
+
+            let title = d;
+            const briefPath = path.join(root, d, 'brief.md');
+            if (fs.existsSync(briefPath)) {
+              const m = fs.readFileSync(briefPath, 'utf-8').match(/^#\s*(.+)$/m);
+              if (m) title = m[1].replace(/^Brief\s+Episode\s*:\s*/i, '').trim();
+            }
+
+            const targetDir = path.join(epOut, d);
+            fs.mkdirSync(targetDir, { recursive: true });
+            fs.copyFileSync(final, path.join(targetDir, 'episode-final.mp4'));
+
+            items.push({
+              slug: d,
+              title,
+              date,
+              video: `episodes/${d}/episode-final.mp4`,
+            });
+          }
+
+          items.sort((a, b) => b.date.localeCompare(a.date));
+          fs.writeFileSync(path.join(out, 'episodes.json'), JSON.stringify(items, null, 2));
+          console.log(`Built gallery with ${items.length} episode(s).`);
+          EOF
+
+      - name: Copy static gallery files
+        run: |
+          if [ -f web/index.html ]; then
+            cp web/index.html _site/index.html
+          fi
+          if [ -f web/styles.css ]; then cp web/styles.css _site/styles.css; fi
+          if [ -f web/app.js ]; then cp web/app.js _site/app.js; fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

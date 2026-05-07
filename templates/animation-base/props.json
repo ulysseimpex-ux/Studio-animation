@@ -1,0 +1,15 @@
+{
+  "title": "Exemple",
+  "shots": [
+    {
+      "image": "images/plan-01.jpg",
+      "narration": "Il était une fois une petite goutte d'eau, paisiblement endormie dans l'immensité bleue de l'océan.",
+      "durationSeconds": 4
+    },
+    {
+      "image": "images/plan-02.jpg",
+      "narration": "Mais un jour, le soleil l'appela. Doucement, elle s'éleva dans le ciel, transformée en fine vapeur invisible.",
+      "durationSeconds": 4
+    }
+  ]
+}

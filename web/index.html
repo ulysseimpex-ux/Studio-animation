@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>🎬 Studio Animation</title>
+    <style>
+      :root {
+        --bg: #0e0f13;
+        --bg-elev: #181a21;
+        --text: #f5f6f8;
+        --muted: #a4a8b3;
+        --accent: #ff7e5f;
+        --accent-2: #feb47b;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: radial-gradient(1200px 600px at 10% -20%, #2a1d36 0%, transparent 60%),
+                    radial-gradient(900px 500px at 110% 0%, #1a2a3a 0%, transparent 60%),
+                    var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        line-height: 1.5;
+      }
+      header {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 48px 24px 24px;
+        text-align: center;
+      }
+      header h1 {
+        font-size: clamp(2rem, 5vw, 3.25rem);
+        margin: 0 0 12px;
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      header p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 1.05rem;
+      }
+      main {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      .grid {
+        display: grid;
+        gap: 24px;
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+      }
+      .card {
+        background: var(--bg-elev);
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 6px 24px rgba(0,0,0,0.3);
+        display: flex;
+        flex-direction: column;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+      .card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 12px 36px rgba(0,0,0,0.45);
+      }
+      .card video {
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        display: block;
+        background: #000;
+      }
+      .card-body {
+        padding: 16px 18px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .card h2 {
+        margin: 0;
+        font-size: 1.15rem;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 14px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: #1a1a1a;
+        font-weight: 600;
+        text-decoration: none;
+        font-size: 0.9rem;
+      }
+      .btn.secondary {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid #2c2f38;
+      }
+      .empty {
+        text-align: center;
+        padding: 64px 16px;
+        color: var(--muted);
+      }
+      footer {
+        text-align: center;
+        padding: 32px 16px 48px;
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      @media (max-width: 480px) {
+        header { padding: 32px 16px 16px; }
+        main { padding: 16px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>🎬 Studio Animation</h1>
+      <p>Pipeline de production d'animations IA — épisodes générés automatiquement.</p>
+    </header>
+    <main>
+      <div id="gallery" class="grid"></div>
+      <div id="empty" class="empty" hidden>
+        Aucun épisode publié pour l'instant. Ouvre une issue avec le tag
+        <code>episode</code> pour en lancer un.
+      </div>
+    </main>
+    <footer>
+      Construit avec Remotion, FFmpeg, Claude et Gemini · GitHub Pages
+    </footer>
+    <script>
+      (async () => {
+        const gallery = document.getElementById('gallery');
+        const empty = document.getElementById('empty');
+        try {
+          const res = await fetch('episodes.json', { cache: 'no-store' });
+          const items = res.ok ? await res.json() : [];
+          if (!items.length) {
+            empty.hidden = false;
+            return;
+          }
+          for (const ep of items) {
+            const card = document.createElement('article');
+            card.className = 'card';
+            card.innerHTML = `
+              <video controls preload="metadata" playsinline src="${ep.video}"></video>
+              <div class="card-body">
+                <h2>${escapeHtml(ep.title)}</h2>
+                <div class="meta">Produit le ${ep.date}</div>
+                <div class="actions">
+                  <a class="btn" href="${ep.video}" download>⬇️ Télécharger</a>
+                  <a class="btn secondary" href="${ep.video}" target="_blank" rel="noopener">Ouvrir</a>
+                </div>
+              </div>`;
+            gallery.appendChild(card);
+          }
+        } catch (e) {
+          empty.hidden = false;
+          empty.textContent = 'Impossible de charger la galerie.';
+        }
+        function escapeHtml(s) {
+          return String(s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+          }[c]));
+        }
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,172 @@
+name: Render Animation
+
+on:
+  push:
+    paths:
+      - 'episodes/**/assets/images/**'
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Chrome dependencies for Remotion
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+            libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64 || \
+          sudo apt-get install -y libasound2
+
+      - name: Detect changed episode
+        id: episode
+        run: |
+          set -e
+          CHANGED=$(git log -1 --name-only --pretty=format: | grep -E '^episodes/[^/]+/assets/images/' | head -1 || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No image changes detected; scanning episodes for newest images..."
+            CHANGED=$(find episodes -path '*/assets/images/*' -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)
+          fi
+          if [ -z "$CHANGED" ]; then
+            echo "No images found, exiting"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          DIR=$(echo "$CHANGED" | sed -E 's#(episodes/[^/]+)/.*#\1#')
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Episode dir: $DIR"
+
+      - name: Setup Remotion project
+        if: steps.episode.outputs.skip != 'true'
+        env:
+          DIR: ${{ steps.episode.outputs.dir }}
+        run: |
+          set -e
+          WORK="$DIR/.remotion"
+          rm -rf "$WORK"
+          cp -r templates/animation-base "$WORK"
+          mkdir -p "$WORK/public/images"
+          cp -r "$DIR/assets/images/." "$WORK/public/images/" 2>/dev/null || true
+          cd "$WORK"
+          npm install --no-audit --no-fund
+
+      - name: Generate Remotion props via Claude
+        if: steps.episode.outputs.skip != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DIR: ${{ steps.episode.outputs.dir }}
+        run: |
+          cd "$DIR/.remotion"
+          npm install --no-save @anthropic-ai/sdk@latest @google/generative-ai@latest
+          node <<'EOF'
+          const fs = require('fs');
+          const path = require('path');
+          const Anthropic = require('@anthropic-ai/sdk');
+          const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+          const dir = process.env.DIR;
+          const scriptPath = path.join(process.cwd(), '..', '..', '..', dir, 'script.md');
+          const altScript = path.join(process.cwd(), '..', 'script.md');
+          let script = '';
+          for (const p of [path.resolve('../../script.md'), path.resolve('../script.md')]) {
+            if (fs.existsSync(p)) { script = fs.readFileSync(p, 'utf-8'); break; }
+          }
+          if (!script) {
+            const cwd = process.cwd();
+            const epDir = path.resolve(cwd, '..');
+            const tryPath = path.join(epDir, 'script.md');
+            if (fs.existsSync(tryPath)) script = fs.readFileSync(tryPath, 'utf-8');
+          }
+
+          const imagesDir = path.join('public', 'images');
+          const images = fs.readdirSync(imagesDir)
+            .filter(f => /\.(jpe?g|png|webp)$/i.test(f))
+            .sort();
+
+          const anthropic = new Anthropic.default({ apiKey: process.env.ANTHROPIC_API_KEY });
+          const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+          async function claude(prompt, system) {
+            const r = await anthropic.messages.create({
+              model: 'claude-opus-4-7',
+              max_tokens: 4096,
+              system,
+              messages: [{ role: 'user', content: prompt }],
+            });
+            return r.content[0].text;
+          }
+
+          async function geminiReview(text) {
+            const model = gemini.getGenerativeModel({ model: 'gemini-2.0-flash' });
+            const r = await model.generateContent(text);
+            return r.response.text();
+          }
+
+          (async () => {
+            const prompt = `Voici le script de l'épisode:\n\n${script}\n\nVoici la liste des images disponibles dans le dossier public/images/ (dans l'ordre):\n${images.map(i => '- images/' + i).join('\n')}\n\nProduis un fichier JSON valide (et UNIQUEMENT le JSON, sans bloc Markdown) au format suivant:\n{\n  "title": "...",\n  "shots": [\n    { "image": "images/<file>", "narration": "<phrase de narration courte>", "durationSeconds": <3-5> }\n  ]\n}\n\nAssocie chaque image à un plan du script (dans l'ordre). La narration doit être courte (max ~25 mots) et tirée du script.`;
+
+            let raw = await claude(prompt, "Tu produis un JSON strictement valide, sans commentaires ni texte autour.");
+            raw = raw.replace(/^```(?:json)?/i, '').replace(/```\s*$/, '').trim();
+
+            const review = await geminiReview(`Voici un JSON destiné à un composant Remotion. Vérifie qu'il est syntaxiquement valide et que les durées sont entre 3 et 5 secondes. Si une correction est nécessaire, renvoie UNIQUEMENT le JSON corrigé. Sinon renvoie le JSON tel quel.\n\n${raw}`);
+            let cleaned = review.replace(/^```(?:json)?/i, '').replace(/```\s*$/, '').trim();
+
+            try {
+              JSON.parse(cleaned);
+            } catch (e) {
+              try { JSON.parse(raw); cleaned = raw; }
+              catch (_) {
+                cleaned = JSON.stringify({
+                  title: 'Episode',
+                  shots: images.map((img, i) => ({
+                    image: 'images/' + img,
+                    narration: 'Plan ' + (i + 1),
+                    durationSeconds: 4,
+                  })),
+                }, null, 2);
+              }
+            }
+            fs.writeFileSync('props.json', cleaned);
+            console.log('props.json written:\n', cleaned);
+          })();
+          EOF
+
+      - name: Render video (horizontal)
+        if: steps.episode.outputs.skip != 'true'
+        env:
+          DIR: ${{ steps.episode.outputs.dir }}
+        run: |
+          cd "$DIR/.remotion"
+          mkdir -p out
+          npx remotion render src/index.ts EpisodeHorizontal out/video-raw.mp4 --props=./props.json
+
+      - name: Move output and clean up
+        if: steps.episode.outputs.skip != 'true'
+        env:
+          DIR: ${{ steps.episode.outputs.dir }}
+        run: |
+          cp "$DIR/.remotion/out/video-raw.mp4" "$DIR/assets/video-raw.mp4"
+          rm -rf "$DIR/.remotion"
+
+      - name: Commit raw video
+        if: steps.episode.outputs.skip != 'true'
+        env:
+          DIR: ${{ steps.episode.outputs.dir }}
+        run: |
+          git config user.name "studio-animation-bot"
+          git config user.email "bot@studio-animation.local"
+          git add "$DIR/assets/video-raw.mp4"
+          git commit -m "feat: render raw animation for $DIR" || echo "Nothing to commit"
+          git push
